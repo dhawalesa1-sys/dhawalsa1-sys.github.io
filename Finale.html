@@ -1,0 +1,1140 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SkyChat v13.1 - Enhanced Chat</title>
+    
+    <!-- React & Babel -->
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Firebase SDKs -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+
+
+    <script>
+        window.tailwind = {
+            config: {
+                safelist: [
+                    { pattern: /(text|bg|border|ring)-(emerald|violet|amber|rose|cyan|blue|purple)-(400|500|600|900)/ },
+                    { pattern: /hover:bg-(emerald|violet|amber|rose|cyan|blue|purple)-(500|600)/ },
+                    { pattern: /focus:border-(emerald|violet|amber|rose|cyan|blue|purple)-(500|600)/ },
+                    { pattern: /focus-within:border-(emerald|violet|amber|rose|cyan|blue|purple)-500\/50/ }
+                ]
+            }
+        }
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+
+
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;500;700&display=swap');
+        body { font-family: 'Outfit', sans-serif; background-color: #0f172a; overflow: hidden; }
+        .fade-in { animation: fadeIn 0.3s ease-out forwards; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .custom-scroll::-webkit-scrollbar { width: 4px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
+        
+        .notification-pop { animation: slideDown 0.4s ease-out forwards, fadeOut 0.4s ease-in 4s forwards; cursor: pointer; }
+        .notification-pop:hover { animation-play-state: paused; opacity: 1 !important; transform: translate(-50%, 25px) scale(1.02); }
+        
+        @keyframes slideDown { from { transform: translate(-50%, -100%); opacity: 0; } to { transform: translate(-50%, 20px); opacity: 1; } }
+        @keyframes fadeOut { 0% { opacity: 1; } 90% { opacity: 1; } 100% { opacity: 0; pointer-events: none; } }
+
+
+        .typing-dot { animation: typing 1.4s infinite ease-in-out both; }
+        .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+        .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+        @keyframes typing { 0%, 80%, 100% { transform: scale(0); } 40% { transform: scale(1); } }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useContext, createContext } = React;
+
+
+        const userFirebaseConfig = {
+            apiKey: "AIzaSyDdVoHzBUEUCBqdaJjA4cgviMx6LeFQI8M",
+            authDomain: "sky-eb243.firebaseapp.com",
+            projectId: "sky-eb243",
+            storageBucket: "sky-eb243.firebasestorage.app",
+            messagingSenderId: "996341390498",
+            appId: "1:996341390498:web:11ebeb878f5daeef8d0bfb",
+            measurementId: "G-NN0N1517J1"
+        };
+
+
+        firebase.initializeApp(userFirebaseConfig);
+        const auth = firebase.auth();
+        const db = firebase.firestore();
+        const ARTIFACT_PATH = 'sky-chat-live-v6';
+
+
+        // --- API LAYER ---
+        const api = {
+            auth,
+            signIn: () => auth.signInAnonymously(),
+            onAuth: (cb) => auth.onAuthStateChanged(cb),
+            getUserDoc: (name) => db.doc(`${ARTIFACT_PATH}/public/users/${name.trim().toLowerCase()}`).get(),
+            setUserDoc: (name, data) => db.doc(`${ARTIFACT_PATH}/public/users/${name.trim().toLowerCase()}`).set(data, { merge: true }),
+            updateHeartbeat: (username, status = 'online') => {
+                if(!username) return;
+                return db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}`).set({ lastActive: Date.now(), status }, { merge: true });
+            },
+            clearHeartbeat: (username) => {
+                if(!username) return;
+                return db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}`).set({ lastActive: 0 }, { merge: true });
+            },
+            checkLoginLock: async (username) => {
+                const snap = await db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}`).get();
+                if(snap.exists) {
+                    const data = snap.data();
+                    if(data.lastActive && Date.now() - data.lastActive < 20 * 1000) return true; 
+                }
+                return false; 
+            },
+            sendTyping: (chatId, username, isTyping) => {
+                const safeChatId = chatId.replace(/[^a-zA-Z0-9]/g, "_");
+                const ref = db.doc(`${ARTIFACT_PATH}/public/typing/${safeChatId}`);
+                return ref.set({ [username]: isTyping ? Date.now() : 0 }, { merge: true });
+            },
+            subscribeTyping: (chatId, cb) => {
+                const safeChatId = chatId.replace(/[^a-zA-Z0-9]/g, "_");
+                return db.doc(`${ARTIFACT_PATH}/public/typing/${safeChatId}`).onSnapshot((snap) => {
+                    if (snap.exists) cb(snap.data());
+                    else cb({});
+                });
+            },
+            sendRecoveryEmail: async (username) => {
+                await new Promise(r => setTimeout(r, 1500));
+                return "registered email";
+            },
+            updateProfile: (username, data) => db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}`).update(data),
+            updatePin: async (username, oldPin, newPin) => {
+                const ref = db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}`);
+                const snap = await ref.get();
+                if (!snap.exists || snap.data().pin !== oldPin) throw new Error("Incorrect current PIN");
+                await ref.update({ pin: newPin });
+            },
+            changeUsername: async (curr, pin, newName) => {
+                const oldRef = db.doc(`${ARTIFACT_PATH}/public/users/${curr.trim().toLowerCase()}`);
+                const newRef = db.doc(`${ARTIFACT_PATH}/public/users/${newName.trim().toLowerCase()}`);
+                const snap = await oldRef.get();
+                if (!snap.exists || snap.data().pin !== pin) throw new Error("Incorrect PIN");
+                const newSnap = await newRef.get();
+                if (newSnap.exists) throw new Error("Username taken");
+                const batch = db.batch();
+                batch.set(newRef, { ...snap.data(), name: newName.trim() });
+                batch.delete(oldRef);
+                await batch.commit();
+                return newName.trim();
+            },
+            blockUser: async (me, target) => {
+                await db.doc(`${ARTIFACT_PATH}/public/users/${me.trim().toLowerCase()}/relationships/${target.trim().toLowerCase()}`).set({ type: 'blocked', name: target.trim() }, { merge: true });
+            },
+            unblockUser: async (me, target) => {
+                await db.doc(`${ARTIFACT_PATH}/public/users/${me.trim().toLowerCase()}/relationships/${target.trim().toLowerCase()}`).set({ type: 'friend', name: target.trim() }, { merge: true });
+            },
+            leaveChat: async (me, targetName) => {
+                await db.doc(`${ARTIFACT_PATH}/public/users/${me.trim().toLowerCase()}/relationships/${targetName.trim().toLowerCase()}`).delete();
+            },
+            deleteAccount: async (username, pin) => {
+                const safeUser = username.trim().toLowerCase();
+                const userRef = db.doc(`${ARTIFACT_PATH}/public/users/${safeUser}`);
+                const snap = await userRef.get();
+                if (!snap.exists || snap.data().pin !== pin) throw new Error("Incorrect PIN");
+                const relSnap = await db.collection(`${ARTIFACT_PATH}/public/users/${safeUser}/relationships`).get();
+                const batch = db.batch();
+                relSnap.forEach(d => {
+                    batch.delete(d.ref); 
+                    batch.delete(db.doc(`${ARTIFACT_PATH}/public/users/${d.id.toLowerCase()}/relationships/${safeUser}`));
+                });
+                batch.delete(userRef);
+                await batch.commit();
+            },
+            sendRequest: async (me, target) => {
+                const ts = Date.now();
+                const m = me.trim().toLowerCase();
+                const t = target.trim().toLowerCase();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${m}/relationships/${t}`).set({ type: 'sent', name: target.trim(), timestamp: ts });
+                await db.doc(`${ARTIFACT_PATH}/public/users/${t}/relationships/${m}`).set({ type: 'received', name: me.trim(), timestamp: ts });
+            },
+            acceptRequest: async (me, target) => {
+                const ts = Date.now();
+                const m = me.trim().toLowerCase();
+                const t = target.trim().toLowerCase();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${m}/relationships/${t}`).set({ type: 'friend', name: target.trim(), timestamp: ts, unreadCount: 0 }, { merge: true });
+                await db.doc(`${ARTIFACT_PATH}/public/users/${t}/relationships/${m}`).set({ type: 'friend', name: me.trim(), timestamp: ts, unreadCount: 0 }, { merge: true });
+            },
+            rejectRequest: async (me, target) => {
+                const m = me.trim().toLowerCase();
+                const t = target.trim().toLowerCase();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${m}/relationships/${t}`).delete();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${t}/relationships/${m}`).delete();
+            },
+            cancelRequest: async (me, target) => {
+                const m = me.trim().toLowerCase();
+                const t = target.trim().toLowerCase();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${m}/relationships/${t}`).delete();
+                await db.doc(`${ARTIFACT_PATH}/public/users/${t}/relationships/${m}`).delete();
+            },
+            subscribeRelationships: (username, cb) => {
+                return db.collection(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}/relationships`)
+                    .onSnapshot((s) => { 
+                        const r = {}; 
+                        s.forEach(d => r[d.id] = d.data()); 
+                        cb(r); 
+                    });
+            },
+            createGroup: (name, creator) => {
+                return db.collection(`${ARTIFACT_PATH}/public/groups`).add({ name: name.trim(), createdBy: creator, createdAt: Date.now(), members: [creator] });
+            },
+            getGroupDoc: (groupId) => db.doc(`${ARTIFACT_PATH}/public/groups/${groupId}`).get(),
+            addGroupMember: (groupId, username) => {
+                return db.doc(`${ARTIFACT_PATH}/public/groups/${groupId}`).update({ members: firebase.firestore.FieldValue.arrayUnion(username.trim()) });
+            },
+            leaveGroup: (groupId, username) => {
+                return db.doc(`${ARTIFACT_PATH}/public/groups/${groupId}`).update({ members: firebase.firestore.FieldValue.arrayRemove(username.trim()) });
+            },
+            deleteGroup: (groupId) => db.doc(`${ARTIFACT_PATH}/public/groups/${groupId}`).delete(),
+            subscribeGroups: (username, cb) => {
+                return db.collection(`${ARTIFACT_PATH}/public/groups`).where('members', 'array-contains', username.trim()).onSnapshot((s) => { 
+                    const g = []; s.forEach(d => g.push({id: d.id, ...d.data()})); cb(g); 
+                });
+            },
+            sendMessage: async (chat, user, uid, text, imageUrl = null) => {
+                let ref = getChatRef(chat, user);
+                await ref.add({ text, sender: user.trim(), uid, timestamp: Date.now(), imageUrl, reactions: {} });
+                if (chat.type === 'dm') {
+                    const recipientName = chat.id.trim();
+                    const senderName = user.trim();
+                    const recipientRelRef = db.doc(`${ARTIFACT_PATH}/public/users/${recipientName.toLowerCase()}/relationships/${senderName.toLowerCase()}`);
+                    await recipientRelRef.set({ 
+                        unreadCount: firebase.firestore.FieldValue.increment(1), 
+                        lastMessage: text || (imageUrl ? 'Sent an image' : 'Message'), 
+                        lastMessageTime: Date.now() 
+                    }, { merge: true });
+                }
+            },
+            markAsRead: async (myUsername, friendName) => {
+                const myRelRef = db.doc(`${ARTIFACT_PATH}/public/users/${myUsername.trim().toLowerCase()}/relationships/${friendName.trim().toLowerCase()}`);
+                await myRelRef.update({ unreadCount: 0 });
+            },
+            addReaction: async (chat, user, msgId, emoji, username) => {
+                const ref = getChatRef(chat, user).doc(msgId);
+                const snap = await ref.get();
+                if(snap.exists) {
+                    const data = snap.data();
+                    const reactions = data.reactions || {};
+                    const users = reactions[emoji] || [];
+                    if(users.includes(username)) { reactions[emoji] = users.filter(u => u !== username); if(reactions[emoji].length === 0) delete reactions[emoji]; } else { reactions[emoji] = [...users, username]; }
+                    await ref.update({ reactions });
+                }
+            },
+            subscribeMessages: (chat, user, cb) => {
+                return getChatRef(chat, user).onSnapshot((s) => { 
+                    const m = []; 
+                    s.forEach(d => m.push({id: d.id, ...d.data()})); 
+                    cb(m.sort((a,b) => (a.timestamp||0)-(b.timestamp||0)).slice(-50)); 
+                });
+            },
+            subscribeGlobalUsers: (cb) => {
+                return db.collection(`${ARTIFACT_PATH}/public/users`).onSnapshot((s) => { 
+                    const u = []; s.forEach(d => { const data = d.data(); if (data && data.name) u.push(data); }); cb(u); 
+                });
+            }
+        };
+
+
+        function getChatRef(chat, user) {
+            if (chat.type === 'group') return db.collection(`${ARTIFACT_PATH}/public/groups/${chat.id}/messages`);
+            let u1 = user.trim().toLowerCase();
+            let u2 = chat.id.trim().toLowerCase();
+            let dmId = [u1, u2].sort().join('_');
+            return db.collection(`${ARTIFACT_PATH}/public/direct_messages/${dmId}/msgs`);
+        }
+
+
+        // --- COMPONENTS ---
+
+
+        const ToastContext = createContext();
+        function ToastProvider({ children }) {
+            const [toast, setToast] = useState(null); 
+            const showToast = (msg, title = null, type = 'success', action = null) => {
+                setToast({ msg, title, type, action });
+                setTimeout(() => setToast(null), 4000);
+            };
+            return (
+                <ToastContext.Provider value={showToast}>
+                    {children}
+                    {toast && (
+                        <div 
+                            onClick={() => { if(toast.action) { toast.action(); setToast(null); } }}
+                            className={`fixed top-4 left-1/2 -translate-x-1/2 min-w-[300px] max-w-sm px-4 py-3 rounded-2xl shadow-2xl z-[100] notification-pop flex items-start gap-3 backdrop-blur-md border 
+                            ${toast.type === 'message' ? 'bg-slate-800/90 border-slate-600 text-white' : toast.type === 'error' ? 'bg-red-600 border-red-500 text-white' : 'bg-emerald-600 border-emerald-500 text-white'}
+                            ${toast.action ? 'cursor-pointer hover:scale-105 transition-transform' : ''}`}
+                        >
+                            {toast.type === 'message' ? (
+                                <div className="w-8 h-8 rounded-full bg-indigo-500 flex items-center justify-center shrink-0 font-bold">{toast.title ? toast.title[0] : '!'}</div>
+                            ) : (
+                                <i className={`fas ${toast.type === 'error' ? 'fa-exclamation-circle' : 'fa-check-circle'} mt-1`}></i>
+                            )}
+                            <div className="flex-1 min-w-0">
+                                {toast.title && <p className="font-bold text-sm truncate">{toast.title}</p>}
+                                <p className="text-sm truncate opacity-90">{toast.msg}</p>
+                            </div>
+                        </div>
+                    )}
+                </ToastContext.Provider>
+            );
+        }
+        const useToast = () => useContext(ToastContext);
+
+
+        class ErrorBoundary extends React.Component {
+            constructor(props) { super(props); this.state = { hasError: false }; }
+            static getDerivedStateFromError(error) { return { hasError: true }; }
+            componentDidCatch(error, errorInfo) { console.error("SkyChat Error:", error, errorInfo); }
+            render() {
+                if (this.state.hasError) {
+                    return (
+                        <div className="h-screen flex flex-col items-center justify-center bg-slate-900 text-white p-6 text-center">
+                            <i className="fas fa-bug text-4xl text-red-500 mb-4"></i>
+                            <h2 className="text-xl font-bold mb-2">Something went wrong</h2>
+                            <button onClick={() => window.location.reload()} className="bg-emerald-600 px-6 py-2 rounded-xl font-bold">Refresh App</button>
+                        </div>
+                    );
+                }
+                return this.props.children;
+            }
+        }
+
+
+        const UserAvatar = ({ name, url, isOnline, isDnd, size = "w-8 h-8", textSize = "text-xs" }) => {
+            if (!name) return <div className={`${size} rounded-full bg-slate-800 border border-slate-700`}></div>;
+            return (
+                <div className={`relative ${size}`}>
+                    {url 
+                        ? <img src={url} className="w-full h-full rounded-full object-cover border border-slate-700 bg-slate-800" />
+                        : <div className="w-full h-full rounded-full bg-slate-700 flex items-center justify-center font-bold text-white border border-slate-600"><span className={textSize}>{name[0].toUpperCase()}</span></div>
+                    }
+                    <div className={`absolute bottom-0 right-0 rounded-full border-2 border-slate-900 ${isDnd ? 'bg-purple-500' : isOnline ? 'bg-emerald-500' : 'bg-slate-500'} w-2.5 h-2.5`}></div>
+                </div>
+            );
+        };
+
+
+        // --- NEW MODALS ---
+        const ProfileModal = ({ viewerName, targetUser, theme, onClose, api }) => {
+            const [rel, setRel] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const showToast = useToast();
+
+
+            useEffect(() => {
+                api.getUserDoc(targetUser.name).then(snap => {
+                     // refresh user data if needed
+                });
+                const unsub = db.doc(`${ARTIFACT_PATH}/public/users/${viewerName.trim().toLowerCase()}/relationships/${targetUser.name.trim().toLowerCase()}`)
+                .onSnapshot(s => setRel(s.exists ? s.data() : null));
+                return unsub;
+            }, [targetUser.name]);
+
+
+            const handleBlock = async () => {
+                if(!confirm(`Block ${targetUser.name}?`)) return;
+                await api.blockUser(viewerName, targetUser.name);
+                onClose();
+            };
+
+
+            const handleUnblock = async () => {
+                await api.unblockUser(viewerName, targetUser.name);
+                onClose();
+            };
+
+
+            return (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 fade-in" onClick={onClose}>
+                    <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-sm w-full relative" onClick={e => e.stopPropagation()}>
+                        <button onClick={onClose} className="absolute top-4 right-4 text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
+                        <div className="flex flex-col items-center">
+                            <div className="w-24 h-24 mb-4 relative">
+                                <UserAvatar name={targetUser.name} url={targetUser.avatar} size="w-24 h-24" textSize="text-3xl" isOnline={targetUser.status === 'online'} isDnd={targetUser.status === 'dnd'} />
+                            </div>
+                            <h2 className="text-2xl font-bold text-white mb-1">{targetUser.name}</h2>
+                            <p className="text-slate-400 text-sm mb-4 text-center px-4">{targetUser.bio || "No bio yet"}</p>
+                            
+                            <div className="flex gap-2 w-full">
+                                {rel?.type === 'blocked' ? (
+                                    <button onClick={handleUnblock} className="flex-1 bg-slate-700 hover:bg-slate-600 py-3 rounded-xl font-bold text-white">Unblock</button>
+                                ) : (
+                                    <button onClick={handleBlock} className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-500 py-3 rounded-xl font-bold border border-red-500/30">Block</button>
+                                )}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            );
+        };
+
+
+        const GroupInfoModal = ({ groupId, groupName, theme, onClose, username, api, onLeave }) => {
+            const [members, setMembers] = useState([]);
+            const [newMember, setNewMember] = useState("");
+            
+            useEffect(() => {
+                api.getGroupDoc(groupId).then(s => {
+                    if(s.exists) setMembers(s.data().members || []);
+                });
+            }, [groupId]);
+
+
+            const addMember = async (e) => {
+                e.preventDefault();
+                if(!newMember.trim()) return;
+                await api.addGroupMember(groupId, newMember);
+                setMembers(prev => [...prev, newMember.trim()]);
+                setNewMember("");
+            };
+
+
+            const leave = async () => {
+                if(!confirm("Leave group?")) return;
+                await api.leaveGroup(groupId, username);
+                onLeave();
+            };
+
+
+            return (
+                <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 fade-in" onClick={onClose}>
+                    <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-sm w-full relative" onClick={e => e.stopPropagation()}>
+                        <div className="flex justify-between items-center mb-4">
+                             <h2 className="text-xl font-bold text-white">{groupName}</h2>
+                             <button onClick={onClose} className="text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
+                        </div>
+                        <div className="mb-4">
+                            <p className="text-xs font-bold text-slate-500 uppercase mb-2">Members</p>
+                            <div className="flex flex-wrap gap-2 mb-4">
+                                {members.map(m => <span key={m} className="bg-slate-800 px-3 py-1 rounded-full text-xs text-white border border-slate-700">{m}</span>)}
+                            </div>
+                            <form onSubmit={addMember} className="flex gap-2">
+                                <input className="w-full bg-slate-950 rounded-lg px-3 py-2 text-xs border border-slate-700 text-white" placeholder="Add username..." value={newMember} onChange={e => setNewMember(e.target.value)} />
+                                <button className={`bg-${theme}-600 px-3 rounded-lg text-white`}><i className="fas fa-plus"></i></button>
+                            </form>
+                        </div>
+                        <button onClick={leave} className="w-full bg-red-500/10 text-red-500 py-3 rounded-xl font-bold border border-red-500/30">Leave Group</button>
+                    </div>
+                </div>
+            );
+        };
+
+
+        const AccountModal = ({ mode, theme, username, onUpdateUsername, onLogout, onClose }) => {
+             const [val, setVal] = useState("");
+             const [pin, setPin] = useState("");
+             const [loading, setLoading] = useState(false);
+             const [msg, setMsg] = useState("");
+             
+             const handleSubmit = async (e) => {
+                 e.preventDefault();
+                 setLoading(true);
+                 setMsg("");
+                 try {
+                     if(mode === 'username') {
+                         const newName = await api.changeUsername(username, pin, val);
+                         onUpdateUsername(newName);
+                         onClose();
+                     } else if (mode === 'pin') {
+                         await api.updatePin(username, pin, val); // val is new pin
+                         onClose();
+                     } else if (mode === 'delete') {
+                         await api.deleteAccount(username, pin);
+                         onLogout();
+                     }
+                 } catch(err) {
+                     setMsg(err.message);
+                 }
+                 setLoading(false);
+             };
+
+
+             return (
+                <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 fade-in">
+                    <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-xs w-full relative">
+                        <button onClick={onClose} className="absolute top-4 right-4 text-slate-500 hover:text-white"><i className="fas fa-times"></i></button>
+                        <h2 className="text-xl font-bold text-white mb-4 capitalize">{mode === 'delete' ? 'Delete Account' : `Change ${mode}`}</h2>
+                        <form onSubmit={handleSubmit} className="space-y-3">
+                            {mode !== 'delete' && <input className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white outline-none" placeholder={mode === 'username' ? 'New Username' : 'New PIN'} value={val} onChange={e => setVal(e.target.value)} required />}
+                            <input type="password" className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white outline-none" placeholder="Current PIN" value={pin} onChange={e => setPin(e.target.value)} required />
+                            {msg && <p className="text-red-500 text-xs">{msg}</p>}
+                            <button disabled={loading} className={`w-full py-3 rounded-xl font-bold text-white ${mode === 'delete' ? 'bg-red-600 hover:bg-red-500' : `bg-${theme}-600 hover:bg-${theme}-500`}`}>{loading ? 'Processing...' : 'Confirm'}</button>
+                        </form>
+                    </div>
+                </div>
+             );
+        };
+
+
+        function AuthScreen({ onLoginSuccess, theme }) {
+            const [step, setStep] = useState('check');
+            const [name, setName] = useState("");
+            const [pin, setPin] = useState("");
+            const [email, setEmail] = useState("");
+            const [error, setError] = useState("");
+            const [loading, setLoading] = useState(false);
+            const [showSafety, setShowSafety] = useState(false);
+            const pinRef = useRef(null);
+            const showToast = useToast();
+
+
+            const handleNameKeyDown = async (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault(); 
+                    if (!name.trim()) return; 
+                    setLoading(true);
+                    try {
+                        const snap = await api.getUserDoc(name.trim());
+                        if (snap.exists) { 
+                            const isLocked = await api.checkLoginLock(name.trim());
+                            if(isLocked) { setError("Account Active. Wait 20s."); setLoading(false); return; }
+                            setEmail(snap.data().email); 
+                            setStep('login'); 
+                            setTimeout(() => pinRef.current?.focus(), 100); 
+                        } 
+                        else { setStep('register'); }
+                    } catch (err) { setError("Connection Error"); }
+                    setLoading(false);
+                }
+            };
+
+
+            const handleForgot = async () => {
+                setLoading(true);
+                try {
+                    await api.sendRecoveryEmail(name.trim());
+                    showToast(`Recovery email sent (Simulated)`, "Success");
+                    setStep('check');
+                    setError("");
+                } catch (err) {
+                    setError(err.message);
+                }
+                setLoading(false);
+            };
+
+
+            const handleLogin = async (e) => { 
+                if (e && e.preventDefault) e.preventDefault(); setLoading(true); 
+                const snap = await api.getUserDoc(name.trim()); 
+                if(snap.exists && snap.data()?.pin === pin) onLoginSuccess(snap.data().name, false); 
+                else setError("Wrong PIN"); 
+                setLoading(false); 
+            };
+
+
+            const handleRegister = async (e) => {
+                e.preventDefault(); setLoading(true);
+                try { 
+                    const safeName = name.trim();
+                    await api.setUserDoc(safeName, { name: safeName, email, pin, joinedAt: Date.now(), bio: "New to SkyChat!", status: 'online' }); 
+                    setShowSafety(true); 
+                } catch(error){ 
+                    setError("Error creating account"); 
+                } 
+                setLoading(false);
+            };
+
+
+            if (showSafety) {
+                return (
+                    <div className="h-screen flex items-center justify-center bg-slate-950 p-4 fade-in">
+                        <div className="max-w-md w-full bg-slate-900 p-8 rounded-3xl border border-red-500/50 text-center relative overflow-hidden">
+                            <div className="absolute top-0 left-0 w-full h-1 bg-red-500"></div>
+                            <h2 className="text-2xl font-bold text-white mb-2 mt-4">Important!</h2>
+                            <p className="text-slate-400 mb-6 text-sm">Write down your PIN to access your account.</p>
+                            <div className="bg-slate-950 border border-slate-800 rounded-xl p-4 mb-6">
+                                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-wider">Username</p>
+                                <p className="text-white font-mono text-lg mb-3">{name.trim()}</p>
+                                <p className="text-[10px] text-slate-500 uppercase font-bold mb-1 tracking-wider">Your PIN</p>
+                                <p className={`text-${theme}-400 font-mono text-4xl font-bold tracking-widest`}>{pin}</p>
+                            </div>
+                            <button onClick={() => onLoginSuccess(name.trim(), true)} className={`w-full bg-${theme}-600 hover:bg-${theme}-500 py-4 rounded-xl font-bold text-white transition-all`}>I have written it down</button>
+                        </div>
+                    </div>
+                );
+            }
+
+
+            return (
+                <div className="h-screen flex items-center justify-center bg-slate-950 p-4 fade-in">
+                    <div className="max-w-md w-full bg-slate-900 p-8 rounded-3xl border border-slate-800 text-center">
+                        <i className={`fas fa-bolt text-${theme}-400 text-4xl mb-4`}></i>
+                        <h1 className="text-2xl font-bold text-white mb-6">SkyChat</h1>
+                        <form onSubmit={(e) => e.preventDefault()} className="space-y-4">
+                            <input disabled={step!=='check'} value={name} onChange={e=>setName(e.target.value)} onKeyDown={handleNameKeyDown} placeholder="Username" className={`w-full bg-slate-950 border border-slate-800 text-white px-6 py-4 rounded-xl outline-none focus:border-${theme}-500 text-center transition-colors`} autoFocus />
+                            {step !== 'check' && (
+                                <div className="relative fade-in">
+                                    <input ref={pinRef} type="password" value={pin} onChange={e=>setPin(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleLogin(e)} placeholder="PIN" className={`w-full bg-slate-950 border border-slate-800 text-white px-6 py-4 rounded-xl text-center outline-none focus:border-${theme}-500 transition-colors`} />
+                                    {step === 'login' && <button type="button" onClick={handleForgot} className="absolute right-4 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-500 uppercase hover:text-white transition-colors">Forgot?</button>}
+                                </div>
+                            )}
+                            {step === 'register' && <input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email" className={`w-full bg-slate-950 border border-slate-800 text-white px-6 py-4 rounded-xl outline-none focus:border-${theme}-500 transition-colors fade-in`} required />}
+                            <button onClick={step === 'check' ? (e) => handleNameKeyDown({key:'Enter', preventDefault:()=>{}}) : step === 'login' ? handleLogin : handleRegister} disabled={loading} className={`w-full bg-${theme}-600 hover:bg-${theme}-500 py-4 rounded-xl font-bold text-white transition-all`}>{loading ? "..." : (step === 'check' ? 'Continue' : 'Go')}</button>
+                            {step !== 'check' && <button type="button" onClick={() => { setStep('check'); setError(""); }} className="text-xs text-slate-500 mt-2 hover:underline">Back</button>}
+                        </form>
+                        {error && <p className="text-red-400 mt-4 text-xs">{error}</p>}
+                    </div>
+                </div>
+            );
+        }
+
+
+        const RequestButtons = ({ theme, username, targetName, api }) => {
+            const showToast = useToast();
+            return (
+                <div className="flex gap-2">
+                    <button onClick={async (e) => { 
+                        e.stopPropagation(); 
+                        await api.acceptRequest(username, targetName); 
+                        showToast(`Accepted ${targetName}`, "Success");
+                    }} className={`bg-${theme}-600 hover:bg-${theme}-500 text-white h-9 w-9 rounded-lg flex items-center justify-center shadow-lg active:scale-95 transition-all`} title="Accept"><i className="fas fa-check"></i></button>
+                    
+                    <button onClick={async (e) => { 
+                        e.stopPropagation(); 
+                        await api.rejectRequest(username, targetName); 
+                        showToast(`Rejected ${targetName}`, "Info");
+                    }} className="bg-slate-700 hover:bg-red-600 text-white h-9 w-9 rounded-lg flex items-center justify-center shadow-lg active:scale-95 transition-all" title="Reject"><i className="fas fa-times"></i></button>
+                </div>
+            );
+        };
+
+
+        const SearchItem = ({ u, username, theme, openProfile, setActiveChat, setShowMobileSearch }) => {
+            const [rel, setRel] = useState(null);
+            const [loading, setLoading] = useState(false);
+            const showToast = useToast();
+
+
+            useEffect(() => { 
+                return db.doc(`${ARTIFACT_PATH}/public/users/${username.trim().toLowerCase()}/relationships/${u.name.trim().toLowerCase()}`)
+                .onSnapshot((s) => { 
+                    if(s.exists) setRel(s.data()); 
+                    else setRel(null); 
+                }); 
+            }, [u.name, username]);
+            
+            const handleAdd = async (e) => {
+                e.stopPropagation();
+                if(loading) return;
+                setLoading(true);
+                try {
+                    await api.sendRequest(username, u.name);
+                    showToast("Request Sent!", "Success");
+                } catch(err) {
+                    showToast("Failed to send request", "Error", "error");
+                }
+                setLoading(false);
+            };
+
+
+            const handleAccept = async (e) => {
+                e.stopPropagation();
+                if(loading) return;
+                setLoading(true);
+                await api.acceptRequest(username, u.name);
+                showToast(`Connected with ${u.name}!`, "Success");
+                setLoading(false);
+            };
+
+
+            const renderAction = () => {
+                if (loading) return <div className="h-9 w-9 flex items-center justify-center"><i className="fas fa-circle-notch fa-spin text-slate-500"></i></div>;
+                
+                if (rel?.type === 'friend') {
+                    return (
+                        <button onClick={(e) => { 
+                            e.stopPropagation(); 
+                            setActiveChat({ id: u.name, type: 'dm', name: u.name }); 
+                            setShowMobileSearch && setShowMobileSearch(false); 
+                        }} className={`bg-slate-800 text-${theme}-400 h-9 w-9 rounded-lg flex items-center justify-center hover:bg-slate-700`}>
+                            <i className="fas fa-comment"></i>
+                        </button>
+                    );
+                }
+                if (rel?.type === 'sent') {
+                    return <span className="text-slate-500 text-[10px] font-bold px-2 py-1 bg-slate-800 rounded">SENT</span>;
+                }
+                if (rel?.type === 'received') {
+                    return <button onClick={handleAccept} className="bg-emerald-600 hover:bg-emerald-500 text-white h-8 px-3 rounded-lg text-xs font-bold shadow-md">Accept</button>;
+                }
+                if (rel?.type === 'blocked') {
+                    return <span className="text-red-500 text-[10px] font-bold">BLOCKED</span>;
+                }
+                
+                return (
+                    <button onClick={handleAdd} className={`bg-slate-700 hover:bg-${theme}-600 text-white h-9 w-9 rounded-lg flex items-center justify-center shadow-md active:scale-95 transition-all`}>
+                        <i className="fas fa-user-plus"></i>
+                    </button>
+                );
+            };
+
+
+            return (
+                <div className="flex justify-between items-center p-2 rounded-xl hover:bg-slate-800/50 transition-colors border border-transparent hover:border-slate-700/50">
+                    <div className="flex items-center gap-3 cursor-pointer flex-1" onClick={() => openProfile(u.name)}>
+                        <UserAvatar name={u.name} url={u.avatar} />
+                        <span className="text-sm font-medium">{u.name}</span>
+                    </div>
+                    <div className="pl-2" onClick={e => e.stopPropagation()}>
+                        {renderAction()}
+                    </div>
+                </div>
+            );
+        };
+
+
+        const SearchList = ({ searchTerm, setSearchTerm, theme, incoming, username, filteredUsers, friends, groups, setActiveChat, setShowMobileSearch, openProfile, users }) => (
+            <div className="flex flex-col h-full">
+                <div className="relative mb-4"><i className="fas fa-search absolute left-3 top-3 text-slate-500 text-xs"></i><input className={`w-full bg-slate-950 border border-slate-700 rounded-xl py-2.5 pl-8 pr-3 text-xs outline-none focus:border-${theme}-500`} placeholder="Search people..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} /></div>
+                
+                {incoming.length > 0 && (
+                    <div className={`bg-slate-800/50 p-3 rounded-xl border border-${theme}-500/30 mb-4`}>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mb-2 px-1">Requests ({incoming.length})</p>
+                        {incoming.map(r => (
+                            <div key={r.name} className="flex justify-between items-center mb-2 last:mb-0 bg-slate-900/50 p-2 rounded-lg">
+                                <div className="flex items-center gap-2 cursor-pointer" onClick={() => openProfile(r.name)}>
+                                    <UserAvatar name={r.name} size="w-8 h-8" />
+                                    <span className="text-sm font-bold">{r.name}</span>
+                                </div>
+                                <RequestButtons theme={theme} username={username} targetName={r.name} api={api} />
+                            </div>
+                        ))}
+                    </div>
+                )}
+                
+                <div className="flex-1 overflow-y-auto custom-scroll space-y-1">
+                    {searchTerm ? filteredUsers.map(u => <SearchItem key={u.name} u={u} username={username} theme={theme} openProfile={openProfile} setActiveChat={setActiveChat} setShowMobileSearch={setShowMobileSearch} />) : (
+                        <>
+                            <p className="px-2 mb-2 text-[10px] font-bold text-slate-600 uppercase">Friends</p>
+                            {friends.map(f => (<div key={f.name} className="flex items-center gap-2"><button onClick={() => { setActiveChat({ id: f.name, type: 'dm', name: f.name }); setShowMobileSearch && setShowMobileSearch(false); }} className={`flex-1 flex items-center gap-3 p-2 rounded-xl hover:bg-slate-800 text-slate-300 text-left`}><UserAvatar name={f.name} url={f.avatar} /><span className="text-sm">{f.name}</span></button><button onClick={() => openProfile(f.name)} className="text-slate-500 hover:text-white px-2"><i className="fas fa-info-circle"></i></button></div>))}
+                            <p className="px-2 mt-4 mb-2 text-[10px] font-bold text-slate-600 uppercase">My Groups</p>
+                            {groups.map(g => (<button key={g.id} onClick={() => { setActiveChat({ id: g.id, type: 'group', name: g.name }); setShowMobileSearch && setShowMobileSearch(false); }} className={`w-full flex items-center gap-3 p-2 rounded-xl transition-all ${'hover:bg-slate-800/50 text-slate-400'}`}><div className="w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold">#</div><span className="text-sm font-medium">{g.name}</span></button>))}
+                        </>
+                    )}
+                </div>
+            </div>
+        );
+
+
+        function MainInterface({ user, username, setUsername, onLogout, theme, setTheme, isNewUser, setIsNewUser }) {
+            const [activeChat, setActiveChat] = useState(null); 
+            const [users, setUsers] = useState([]); 
+            const [groups, setGroups] = useState([]);
+            const [relationships, setRelationships] = useState({}); 
+            const [searchTerm, setSearchTerm] = useState("");
+            const [showCreateGroup, setShowCreateGroup] = useState(false);
+            const [newGroupName, setNewGroupName] = useState("");
+            const [showSettings, setShowSettings] = useState(false);
+            const [showMobileSearch, setShowMobileSearch] = useState(false);
+            const [viewProfileName, setViewProfileName] = useState(null); 
+            const [showGroupInfo, setShowGroupInfo] = useState(false);
+            const [editBio, setEditBio] = useState("");
+            const [accountMode, setAccountMode] = useState(null);
+            const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+            const [saveStatus, setSaveStatus] = useState("");
+            const [profilePic, setProfilePic] = useState("");
+            const [userStatus, setUserStatus] = useState("online");
+            const fileRef = useRef(null);
+            const showToast = useToast();
+            const prevRelationships = useRef({});
+
+
+            useEffect(() => {
+                const unsubU = api.subscribeGlobalUsers(setUsers);
+                const unsubG = api.subscribeGroups(username, setGroups);
+                const unsubR = api.subscribeRelationships(username, setRelationships);
+                api.getUserDoc(username).then(snap => {
+                    const d = snap.data();
+                    if(d) { 
+                        setEditBio(d.bio || ""); 
+                        setProfilePic(d.avatar || ""); 
+                        setUserStatus(d.status || "online");
+                    }
+                });
+                
+                const hb = setInterval(() => api.updateHeartbeat(username, userStatus), 30000); 
+                window.addEventListener('beforeunload', () => api.clearHeartbeat(username)); 
+                return () => { unsubU(); unsubG(); unsubR(); clearInterval(hb); window.removeEventListener('beforeunload', () => {}); };
+            }, [username, userStatus]);
+
+
+            // Notification Logic - Modified to include click handler
+            useEffect(() => {
+                if (userStatus === 'dnd') return; // DND Check
+                if (Object.keys(prevRelationships.current).length > 0) {
+                    Object.entries(relationships).forEach(([friendName, rel]) => {
+                        const oldRel = prevRelationships.current[friendName];
+                        if (oldRel && rel.unreadCount > oldRel.unreadCount && activeChat?.id !== friendName) {
+                            // Pass click handler to switch chat
+                            showToast(rel.lastMessage, friendName, 'message', () => {
+                                setActiveChat({ id: friendName, type: 'dm', name: friendName });
+                            });
+                        }
+                    });
+                }
+                prevRelationships.current = relationships;
+            }, [relationships, activeChat, userStatus]);
+
+
+            useEffect(() => { if (activeChat?.type === 'dm') api.markAsRead(username, activeChat.name); }, [activeChat]);
+
+
+            const createNewGroup = async (e) => { e.preventDefault(); if(!newGroupName.trim()) return; await api.createGroup(newGroupName, username); setShowCreateGroup(false); setNewGroupName(""); setShowMobileSearch(false); };
+            const handleUpdateProfile = async () => { await api.updateProfile(username, { bio: editBio, avatar: profilePic }); setSaveStatus("Saved!"); setTimeout(() => setSaveStatus(""), 2000); };
+            const handleAvatarUpload = (e) => { const f = e.target.files[0]; if(f && f.size < 100000) { const r = new FileReader(); r.onload = ev => setProfilePic(ev.target.result); r.readAsDataURL(f); } else { alert("Image too big! Max 100KB."); } };
+            const toggleDnd = () => {
+                const newStatus = userStatus === 'online' ? 'dnd' : 'online';
+                setUserStatus(newStatus);
+                api.updateProfile(username, { status: newStatus });
+                api.updateHeartbeat(username, newStatus);
+            };
+            const openProfile = (name) => { setViewProfileName(name); }
+            const resetChat = () => { setActiveChat(null); setShowGroupInfo(false); };
+            
+            // Handle deleting/leaving chats
+            const handleDeleteGroup = async () => {
+                if(!activeChat || activeChat.type !== 'group') return;
+                if(!confirm("Are you sure you want to DELETE this group? It will be gone for everyone.")) return;
+                await api.deleteGroup(activeChat.id);
+                resetChat();
+            };
+            const handleLeaveDM = async () => {
+                if(!activeChat || activeChat.type !== 'dm') return;
+                if(!confirm("Hide this conversation?")) return;
+                await api.leaveChat(username, activeChat.name);
+                resetChat();
+            };
+
+
+            const onOpenGroupInfo = () => setShowGroupInfo(true); 
+
+
+            const friends = Object.values(relationships).filter(r => r.type === 'friend');
+            const incoming = Object.values(relationships).filter(r => r.type === 'received');
+            const filteredUsers = users.filter(u => u.name && u.name.toLowerCase().includes(searchTerm.toLowerCase()) && u.name.toLowerCase() !== username.toLowerCase());
+            const THEME_COLORS = [ {id:'emerald',bg:'bg-emerald-500'},{id:'violet',bg:'bg-violet-500'},{id:'amber',bg:'bg-amber-500'},{id:'rose',bg:'bg-rose-500'},{id:'cyan',bg:'bg-cyan-500'},{id:'blue',bg:'bg-blue-500'} ];
+            const targetUserProfile = viewProfileName ? users.find(u => u.name && u.name.toLowerCase() === viewProfileName.toLowerCase()) : null;
+
+
+            return (
+                <div className="h-[100dvh] flex bg-slate-950 text-white overflow-hidden fade-in relative">
+                    {isNewUser && <TutorialOverlay theme={theme} onClose={() => setIsNewUser(false)} />}
+                    {viewProfileName && targetUserProfile && <ProfileModal viewerName={username} targetUser={targetUserProfile} theme={theme} onClose={() => setViewProfileName(null)} api={api} />}
+                    {showGroupInfo && activeChat?.type === 'group' && <GroupInfoModal groupId={activeChat.id} groupName={activeChat.name} theme={theme} onClose={() => setShowGroupInfo(false)} username={username} api={api} onLeave={resetChat} />}
+                    {accountMode && <AccountModal mode={accountMode} theme={theme} username={username} onUpdateUsername={setUsername} onLogout={onLogout} onClose={() => setAccountMode(null)} />}
+                    
+                    {showSettings && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4" onClick={(e) => e.target === e.currentTarget && setShowSettings(false)}>
+                            <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-sm w-full relative flex flex-col max-h-[80vh]">
+                                <div className="flex justify-between items-center mb-4"><h2 className="text-xl font-bold">Settings</h2><button onClick={() => setShowSettings(false)} className="text-slate-500 hover:text-white"><i className="fas fa-times text-xl"></i></button></div>
+                                <div className="overflow-y-auto custom-scroll pr-2 space-y-6">
+                                    <div className="flex items-center justify-between bg-slate-800 p-3 rounded-xl border border-slate-600/50">
+                                        <div className="text-sm font-bold">Blocked Users</div>
+                                        <div className="text-xs text-slate-400">View in Search</div>
+                                    </div>
+                                    <div><p className="text-xs font-bold text-slate-500 uppercase mb-2">Profile Picture</p><div className="flex items-center gap-4"><div className="w-16 h-16 rounded-full bg-slate-800 flex items-center justify-center overflow-hidden border border-slate-600">{profilePic ? <img src={profilePic} className="w-full h-full object-cover" /> : <i className="fas fa-user text-2xl text-slate-500"></i>}</div><input type="file" ref={fileRef} className="hidden" accept="image/*" onChange={handleAvatarUpload} /><button onClick={() => fileRef.current.click()} className="bg-slate-800 px-4 py-2 rounded-lg text-xs font-bold hover:bg-slate-700">Upload</button></div></div>
+                                    <div><p className="text-xs font-bold text-slate-500 uppercase mb-2">Theme</p><div className="flex gap-3 flex-wrap">{THEME_COLORS.map(c => <button key={c.id} onClick={() => setTheme(c.id)} className={`w-8 h-8 rounded-full ${c.bg} ${theme === c.id ? 'ring-2 ring-white' : 'opacity-50'}`}></button>)}</div></div>
+                                    <div><p className="text-xs font-bold text-slate-500 uppercase mb-2">Edit Bio</p><textarea className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-sm text-white outline-none focus:border-emerald-500" rows="3" value={editBio} onChange={e => setEditBio(e.target.value)}></textarea><div className="flex items-center gap-2 mt-2"><button onClick={handleUpdateProfile} className={`text-xs bg-${theme}-600 px-3 py-1 rounded font-bold hover:bg-${theme}-500`}>Save</button>{saveStatus && <span className="text-xs text-emerald-400 fade-in font-bold">{saveStatus}</span>}</div></div>
+                                    <div className="pt-2 border-t border-slate-800 space-y-1"><p className="text-xs font-bold text-slate-500 uppercase mb-1">Account</p><button onClick={() => setAccountMode('username')} className="w-full bg-slate-800 hover:bg-slate-700 text-left px-3 py-3 rounded-lg text-sm flex justify-between">Change Username <i className="fas fa-chevron-right text-xs"></i></button><button onClick={() => setAccountMode('pin')} className="w-full bg-slate-800 hover:bg-slate-700 text-left px-3 py-3 rounded-lg text-sm flex justify-between">Change PIN <i className="fas fa-chevron-right text-xs"></i></button></div>
+                                    <div className="pt-2 border-t border-slate-800"><p className="text-xs font-bold text-red-500/80 uppercase mb-2">Danger Zone</p><button onClick={() => setAccountMode('delete')} className="w-full bg-red-600/10 hover:bg-red-600/20 text-red-500 text-left px-3 py-3 rounded-lg text-sm flex justify-between">Delete Account & Data <i className="fas fa-trash text-xs"></i></button></div>
+                                    <button onClick={() => { setShowSettings(false); setShowLogoutConfirm(true); }} className="w-full bg-red-600/10 text-red-500 border border-red-600/30 p-3 rounded-xl font-bold">Log Out</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+
+                    {showLogoutConfirm && <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4"><div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-xs w-full text-center"><h3 className="text-white font-bold text-xl mb-4">Log Out?</h3><div className="flex gap-3"><button onClick={() => setShowLogoutConfirm(false)} className="flex-1 bg-slate-800 py-3 rounded-xl">Cancel</button><button onClick={onLogout} className="flex-1 bg-red-600 py-3 rounded-xl">Log Out</button></div></div></div>}
+
+
+                    {/* NEW: FULL-SCREEN MODAL FOR SEARCH (Desktop & Mobile) */}
+                    {showMobileSearch && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 fade-in">
+                            <div className="bg-slate-900 border border-slate-700 p-6 rounded-3xl shadow-2xl max-w-sm w-full h-[80vh] flex flex-col relative">
+                                <div className="flex justify-between items-center mb-4">
+                                    <h2 className="text-xl font-bold text-white">Contacts & Groups</h2>
+                                    <button onClick={() => setShowMobileSearch(false)} className="text-slate-500 hover:text-white"><i className="fas fa-times text-xl"></i></button>
+                                </div>
+                                <div className="mb-4 bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                                    <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">New Group</p>
+                                    <form onSubmit={createNewGroup} className="flex gap-2">
+                                        <input className="w-full bg-slate-900 rounded-lg px-3 py-2 text-sm border border-slate-700 text-white outline-none focus:border-emerald-500" placeholder="Group Name..." value={newGroupName} onChange={e => setNewGroupName(e.target.value)} />
+                                        <button className={`bg-${theme}-600 text-white px-4 rounded-lg hover:bg-${theme}-500 transition-colors`}><i className="fas fa-plus"></i></button>
+                                    </form>
+                                </div>
+                                <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                                    <SearchList searchTerm={searchTerm} setSearchTerm={setSearchTerm} theme={theme} incoming={incoming} username={username} filteredUsers={filteredUsers} friends={friends} groups={groups} setActiveChat={setActiveChat} setShowMobileSearch={setShowMobileSearch} openProfile={openProfile} users={users} />
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+
+                    <div className="w-20 md:w-80 bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
+                        <div className="p-4 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="cursor-pointer relative" onClick={() => openProfile(username)}>
+                                    <UserAvatar name={username} url={profilePic} isOnline={true} isDnd={userStatus === 'dnd'} />
+                                </div>
+                                <div className="hidden md:block flex-1 min-w-0"><p className="font-bold text-sm truncate text-white">{username}</p></div>
+                            </div>
+                            <div className="flex gap-2">
+                                <button onClick={toggleDnd} className={`w-8 h-8 rounded-full flex items-center justify-center transition-colors ${userStatus === 'dnd' ? 'bg-purple-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'}`} title="Do Not Disturb"><i className="fas fa-moon text-xs"></i></button>
+                                <button onClick={() => setShowSettings(true)} className="w-8 h-8 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center hover:bg-slate-700"><i className="fas fa-cog text-xs"></i></button>
+                            </div>
+                        </div>
+                        
+                        <div className="px-4 mb-4 flex justify-between items-center">
+                            <h2 className={`font-bold text-xl text-${theme}-400 flex justify-between`}><span>Chats</span></h2>
+                            <button onClick={() => setShowCreateGroup(!showCreateGroup)} className="text-xs bg-slate-800 p-2 rounded hover:text-white"><i className="fas fa-plus"></i></button>
+                        </div>
+                        
+                        {showCreateGroup && <div className="px-4 mb-4"><form onSubmit={createNewGroup} className="flex gap-2"><input autoFocus className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs" placeholder="Group Name" value={newGroupName} onChange={e => setNewGroupName(e.target.value)} /><button className={`bg-${theme}-600 px-3 rounded text-xs`}>OK</button></form></div>}
+                        
+                        <div className="flex-1 overflow-y-auto custom-scroll px-2">
+                            {friends.length === 0 && groups.length === 0 && <div className="text-center text-slate-600 text-xs mt-10">No chats yet.<br/>Search for friends!</div>}
+                            {friends.map(f => {
+                                const friendUser = users.find(u => u.name && u.name.toLowerCase() === f.name.toLowerCase());
+                                const isOnline = friendUser?.lastActive && (Date.now() - friendUser.lastActive < 60000);
+                                const isDnd = friendUser?.status === 'dnd';
+                                const lastSeen = isOnline ? 'Online' : friendUser?.lastActive ? `Seen ${new Date(friendUser.lastActive).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}` : '';
+                                
+                                return (
+                                <button key={f.name} onClick={() => setActiveChat({ id: f.name, type: 'dm', name: f.name })} className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors mb-1 ${activeChat?.id === f.name ? 'bg-slate-800' : 'hover:bg-slate-800/50'}`}>
+                                    <div className="relative">
+                                        <UserAvatar name={f.name} url={friendUser?.avatar} isOnline={isOnline} isDnd={isDnd} />
+                                        {f.unreadCount > 0 && <div className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full flex items-center justify-center text-[9px] font-bold text-white shadow-sm border border-slate-900">{f.unreadCount > 9 ? '9+' : f.unreadCount}</div>}
+                                    </div>
+                                    <div className="hidden md:block flex-1 text-left overflow-hidden">
+                                        <div className="flex justify-between items-center">
+                                            <p className={`text-sm truncate ${f.unreadCount > 0 ? 'text-white font-bold' : 'text-slate-300'}`}>{f.name}</p>
+                                            <span className={`text-[9px] ${isOnline ? 'text-emerald-500 font-bold' : 'text-slate-600'}`}>{lastSeen}</span>
+                                        </div>
+                                        <p className="text-[10px] text-slate-500 truncate">{f.lastMessage || 'Open chat'}</p>
+                                    </div>
+                                </button>
+                            )})}
+                            {groups.map(g => (
+                                <button key={g.id} onClick={() => setActiveChat({ id: g.id, type: 'group', name: g.name })} className={`w-full flex items-center gap-3 p-2 rounded-xl transition-colors mb-1 ${activeChat?.id === g.id ? 'bg-slate-800' : 'hover:bg-slate-800/50'}`}>
+                                    <div className={`w-8 h-8 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-xs font-bold text-slate-400`}>#</div>
+                                    <div className="hidden md:block flex-1 text-left overflow-hidden"><p className="text-sm truncate text-slate-300">{g.name}</p></div>
+                                </button>
+                            ))}
+                        </div>
+                        
+                        {/* Desktop Search Button */}
+                        <div className="p-4 border-t border-slate-800">
+                            <button onClick={() => setShowMobileSearch(true)} className="w-full bg-slate-800 text-slate-400 py-3 rounded-xl text-xs flex items-center justify-center gap-2 hover:bg-slate-700 hover:text-white transition-colors shadow-sm font-bold uppercase tracking-wider">
+                                <i className="fas fa-search"></i> Search Users
+                            </button>
+                        </div>
+                    </div>
+
+
+                    <div className="flex-1 flex flex-col min-w-0">
+                        {activeChat ? (
+                            <>
+                                <div className="px-6 py-4 border-b border-slate-900 bg-slate-950/80 backdrop-blur flex justify-between items-center">
+                                    <div className="flex flex-col cursor-pointer" onClick={() => activeChat.type === 'dm' ? openProfile(activeChat.name) : onOpenGroupInfo()}>
+                                        <h3 className="font-bold text-lg text-white">{activeChat.name}</h3>
+                                        {activeChat.type === 'dm' && targetUserProfile && (
+                                            <span className="text-[10px] text-slate-400 font-medium">
+                                                {targetUserProfile.lastActive && Date.now() - targetUserProfile.lastActive < 60000 
+                                                    ? <span className="text-emerald-400">Online</span> 
+                                                    : `Last seen ${targetUserProfile.lastActive ? new Date(targetUserProfile.lastActive).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : 'offline'}`}
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-4">
+                                        {activeChat.type === 'group' && <button onClick={onOpenGroupInfo} className={`text-${theme}-400 text-xs font-bold uppercase`}>Info</button>}
+                                        {/* Leave/Delete Chat Buttons */}
+                                        {activeChat.type === 'dm' ? (
+                                            <button onClick={handleLeaveDM} className="text-slate-500 hover:text-red-500 text-sm" title="Leave Chat"><i className="fas fa-door-open"></i></button>
+                                        ) : (
+                                            <button onClick={onOpenGroupInfo} className="text-slate-500 hover:text-white text-sm"><i className="fas fa-cog"></i></button>
+                                        )}
+                                    </div>
+                                </div>
+                                <ChatFeed user={user} username={username} activeChat={activeChat} theme={theme} openProfile={openProfile} onOpenGroupInfo={() => setShowGroupInfo(true)} api={api} />
+                            </>
+                        ) : (
+                            <div className="flex flex-col items-center justify-center h-full text-slate-500">
+                                <i className="fas fa-paper-plane text-6xl mb-6 opacity-20"></i>
+                                <p>Select a chat to start messaging</p>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+
+        function ChatFeed({ user, username, activeChat, theme, openProfile, onOpenGroupInfo, api }) {
+            const [messages, setMessages] = useState([]);
+            const [text, setText] = useState("");
+            const [imageInput, setImageInput] = useState(false);
+            const [imageUrl, setImageUrl] = useState("");
+            const [senders, setSenders] = useState({});
+            const [typingData, setTypingData] = useState({});
+            const scrollRef = useRef(null);
+            const fileRef = useRef(null);
+            const typingTimeoutRef = useRef(null);
+
+
+            useEffect(() => { setMessages([]); return api.subscribeMessages(activeChat, username, setMessages); }, [activeChat.id]);
+            useEffect(() => { return api.subscribeTyping(activeChat.id, setTypingData); }, [activeChat.id]);
+            useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, typingData]);
+            
+            useEffect(() => {
+                const uniqueSenders = [...new Set(messages.map(m => m.sender))];
+                uniqueSenders.forEach(async s => {
+                    if(!senders[s]) {
+                        const snap = await api.getUserDoc(s);
+                        if(snap.exists) setSenders(prev => ({...prev, [s]: snap.data().avatar}));
+                    }
+                });
+            }, [messages]);
+
+
+            const handleFile = (e) => { const f = e.target.files[0]; if(!f) return; if(f.size>1000000) { alert("Max 1MB"); return; } const r = new FileReader(); r.onload=ev=>{ setImageUrl(ev.target.result); setImageInput(true); }; r.readAsDataURL(f); };
+            
+            const handleTyping = (e) => {
+                setText(e.target.value);
+                api.sendTyping(activeChat.id, username, true);
+                if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+                typingTimeoutRef.current = setTimeout(() => api.sendTyping(activeChat.id, username, false), 2000);
+            };
+
+
+            const send = (e) => { 
+                e.preventDefault(); 
+                if (!text.trim() && !imageUrl.trim()) return; 
+                api.sendMessage(activeChat, username, user.uid, text, imageUrl); 
+                api.sendTyping(activeChat.id, username, false);
+                setText(""); setImageUrl(""); setImageInput(false);
+            };
+
+
+            const handleKeyDown = (e) => {
+                if(e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    send(e);
+                }
+            };
+
+
+            const addReaction = (msgId, emoji) => { api.addReaction(activeChat, username, msgId, emoji, username); };
+
+
+            const activeTypers = Object.entries(typingData)
+                .filter(([name, ts]) => name !== username && Date.now() - ts < 3000)
+                .map(([name]) => name);
+
+
+            return (
+                <div className="flex flex-col h-full bg-slate-950 min-h-0">
+                    <div className="flex-1 overflow-y-auto p-6 space-y-4 custom-scroll min-h-0" ref={scrollRef}>
+                        {messages.map(m => (
+                            <div key={m.id} className={`flex flex-col ${m.sender === username ? 'items-end' : 'items-start'} group relative mb-2`}>
+                                <div className="flex items-end gap-2 max-w-[85%]">
+                                    {m.sender !== username && <div onClick={() => openProfile(m.sender)} className="cursor-pointer"><UserAvatar name={m.sender} url={senders[m.sender]} size="w-6 h-6" textSize="text-[8px]" /></div>}
+                                    <div className={`px-4 py-2 rounded-2xl ${m.sender === username ? `bg-${theme}-600 text-white` : 'bg-slate-900 border border-slate-800 text-slate-300'}`}>
+                                        {m.sender !== username && <p className={`text-[10px] font-bold text-${theme}-500 mb-1 cursor-pointer`} onClick={() => openProfile(m.sender)}>{m.sender}</p>}
+                                        {m.imageUrl && <img src={m.imageUrl} alt="attached" className="max-w-full rounded-lg mb-2 mt-1" />}
+                                        <p className="text-sm break-words whitespace-pre-wrap leading-relaxed">{m.text}</p>
+                                        <div className="flex justify-end items-center gap-1 mt-1 opacity-70">
+                                            <span className="text-[10px]">{new Date(m.timestamp).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                            {m.sender === username && <i className="fas fa-check-double text-[8px]"></i>}
+                                        </div>
+                                        {m.reactions && Object.keys(m.reactions).length > 0 && <div className="flex gap-1 mt-2 -mb-1">{Object.entries(m.reactions).map(([emoji, users]) => <div key={emoji} className="bg-black/20 rounded-full px-2 py-0.5 text-[10px] text-white/80" title={users.join(', ')}>{emoji} <span className="opacity-60">{users.length}</span></div>)}</div>}
+                                    </div>
+                                </div>
+                                <div className={`hidden group-hover:flex gap-1 bg-slate-800 p-1 rounded-lg border border-slate-700 shadow-xl mt-1 z-10 w-fit`}>{['❤️', '😂', '😮', '👍', '🔥'].map(emoji => <button key={emoji} onClick={() => addReaction(m.id, emoji)} className="hover:scale-125 transition-transform text-sm">{emoji}</button>)}</div>
+                            </div>
+                        ))}
+                        {activeTypers.length > 0 && (
+                            <div className="flex items-center gap-2 text-slate-500 text-xs italic ml-2">
+                                <div className="flex gap-1"><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div><div className="w-1.5 h-1.5 bg-slate-500 rounded-full typing-dot"></div></div>
+                                {activeTypers.join(", ")} is typing...
+                            </div>
+                        )}
+                    </div>
+                    <form onSubmit={send} className="shrink-0 p-4 pb-12 md:pb-8 border-t border-slate-900 flex flex-col gap-2 bg-slate-950">
+                        {imageInput && <div className="flex gap-2 animate-pulse"><div className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-2 text-xs flex items-center text-slate-400"><i className="fas fa-check text-emerald-500 mr-2"></i> Image Attached</div><button type="button" onClick={() => { setImageInput(false); setImageUrl(""); }} className="text-red-500 text-xs px-2"><i className="fas fa-times"></i></button></div>}
+                        <div className="flex gap-2 items-end">
+                            <input type="file" ref={fileRef} accept="image/*" className="hidden" onChange={handleFile} />
+                            <button type="button" onClick={() => fileRef.current.click()} className={`bg-slate-800 text-slate-400 w-10 h-10 rounded-xl hover:text-${theme}-400 transition-colors mb-1`}><i className="fas fa-image"></i></button>
+                            <textarea 
+                                className="flex-1 bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-white outline-none focus:border-emerald-500 resize-none custom-scroll" 
+                                placeholder="Type a message..." 
+                                value={text} 
+                                onChange={handleTyping}
+                                onKeyDown={handleKeyDown}
+                                rows="1"
+                                style={{ minHeight: '60px', maxHeight: '150px' }}
+                            />
+                            <button type="submit" className={`bg-${theme}-600 px-4 h-10 rounded-xl text-white active:scale-95 transition-transform mb-1`}><i className="fas fa-paper-plane"></i></button>
+                        </div>
+                    </form>
+                </div>
+            );
+        }
+
+
+        function App() {
+            const [user, setUser] = useState(null);
+            const [username, setUsername] = useState("");
+            const [hasJoined, setHasJoined] = useState(false);
+            const [isNewUser, setIsNewUser] = useState(false);
+            const [connState, setConnState] = useState("init");
+            const [theme, setThemeState] = useState(localStorage.getItem('skychat_theme') || "emerald");
+            const setTheme = (t) => { setThemeState(t); localStorage.setItem('skychat_theme', t); };
+
+
+            useEffect(() => {
+                api.signIn().catch(() => setConnState("db_locked"));
+                const unsub = api.onAuth((u) => { if(u) { setUser(u); setConnState("ready"); } });
+                return () => unsub();
+            }, []);
+
+
+            if (connState !== "ready") return <div className="h-screen flex items-center justify-center bg-slate-950 text-white"><i className={`fas fa-circle-notch fa-spin text-emerald-400 text-4xl`}></i></div>;
+
+
+            return (
+                <ErrorBoundary>
+                    <ToastProvider>
+                        {hasJoined 
+                            ? <MainInterface user={user} username={username} setUsername={setUsername} onLogout={() => { setHasJoined(false); api.clearHeartbeat(username); }} theme={theme} setTheme={setTheme} isNewUser={isNewUser} setIsNewUser={setIsNewUser} />
+                            : <AuthScreen onLoginSuccess={(n, isNew) => { setUsername(n); setIsNewUser(isNew); setHasJoined(true); }} theme={theme} />
+                        }
+                    </ToastProvider>
+                </ErrorBoundary>
+            );
+        }
+
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
